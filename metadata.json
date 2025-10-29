@@ -1,0 +1,5 @@
+{
+  "name": "Historical Object Finder",
+  "description": "An AI-powered chat application that analyzes user-uploaded photos to identify historical objects with high confidence and provides detailed descriptions.",
+  "requestFramePermissions": []
+}
