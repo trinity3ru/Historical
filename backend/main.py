@@ -3,6 +3,7 @@ API на FastAPI для анализа исторических объектов
 Шаг 2: добавлен эндпоинт /analyze, валидация файла и вызов Gemini.
 """
 
+import logging
 import os
 import tempfile
 from io import BytesIO
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field
 from PIL import Image
 
 # Загружаем переменные окружения из .env, чтобы не хранить ключ в коде.
+# Загружаем переменные окружения из .env, чтобы не хранить ключ в коде.
 load_dotenv()
 
 GEMINI_API_KEY: Final[str | None] = os.getenv("GEMINI_API_KEY")
@@ -29,6 +31,12 @@ if GEMINI_API_KEY:
     genai_client = genai.Client(api_key=GEMINI_API_KEY)
 else:
     genai_client = None
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("historical-backend")
 
 
 class HealthResponse(BaseModel):
@@ -79,9 +87,11 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
     Принимает изображение, валидирует, вызывает Gemini и возвращает список объектов.
     """
     if genai_client is None:
+        logger.error("GEMINI_API_KEY is not set")
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY не задан")
 
     if file.content_type not in ALLOWED_TYPES:
+        logger.warning("Unsupported content type: %s", file.content_type)
         raise HTTPException(
             status_code=400,
             detail=f"Неподдерживаемый тип файла: {file.content_type}",
@@ -89,8 +99,10 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
 
     raw_bytes = await file.read()
     if not raw_bytes:
+        logger.warning("Empty file received")
         raise HTTPException(status_code=400, detail="Файл пустой")
     if len(raw_bytes) > MAX_FILE_SIZE:
+        logger.warning("File too large: %s bytes", len(raw_bytes))
         raise HTTPException(status_code=400, detail="Файл слишком большой (лимит 5MB)")
 
     # Пробуем нормализовать изображение через Pillow, чтобы избежать ошибок
@@ -102,7 +114,15 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
             rgb_img.save(buf, format="PNG")
             normalized_bytes = buf.getvalue()
             normalized_mime = "image/png"
+            logger.info(
+                "Image normalized: orig_size=%s normalized_size=%s mode=%s format=%s",
+                len(raw_bytes),
+                len(normalized_bytes),
+                img.mode,
+                img.format,
+            )
     except Exception as pillow_err:  # noqa: BLE001
+        logger.exception("Pillow failed to process image")
         raise HTTPException(
             status_code=400,
             detail=f"Не удалось обработать изображение (Pillow): {pillow_err}",
@@ -157,6 +177,11 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
         )
 
         text = (response.text or "").strip()
+        logger.info(
+            "Gemini response length=%s status=%s",
+            len(text),
+            getattr(response, "prompt_feedback", None),
+        )
         if not text:
             return AnalyzeResponse(objects=[])
 
@@ -178,6 +203,7 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
                     objects.append(HistoricalObject(**item))
                 except Exception:
                     # Пропускаем некорректные элементы, оставшиеся вернём.
+                    logger.warning("Skip invalid item from model response: %s", item)
                     continue
 
         return AnalyzeResponse(objects=objects)
@@ -186,6 +212,7 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
         raise
     except Exception as err:  # noqa: BLE001
         # Логируем сжатое описание ошибки для диагностики.
+        logger.exception("Unexpected error during analysis")
         raise HTTPException(status_code=500, detail=f"Ошибка анализа: {err}") from err
     finally:
         if tmp_path:
@@ -193,5 +220,6 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
                 Path(tmp_path).unlink(missing_ok=True)
             except OSError:
                 # Если файл не удалился, просто продолжаем; на учебном проекте допустимо.
+                logger.warning("Failed to delete temp file: %s", tmp_path)
                 pass
 
