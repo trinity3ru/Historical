@@ -11,6 +11,7 @@ from typing import Final
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types as genai_types
 from pydantic import BaseModel, Field
@@ -49,6 +50,16 @@ app = FastAPI(
     title="Historical Object Finder API",
     description="API для анализа изображений с помощью Gemini",
     version="0.2.0",
+)
+
+# Разрешаем CORS, чтобы фронтенд мог обращаться к API с другого домена/порта.
+# Для учебного проекта allow_origins="*" допустимо, в проде лучше перечислять домены.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

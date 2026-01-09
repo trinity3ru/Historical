@@ -9,13 +9,6 @@ interface ChatMessageProps {
 const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const isUser = message.author === 'user';
 
-  // Basic markdown to HTML conversion
-  const formatText = (text: string) => {
-    let html = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Bold
-    html = html.replace(/\n/g, '<br />'); // Newlines
-    return { __html: html };
-  };
-
   if (isUser && message.imageUrl) {
     return (
       <div className="flex justify-end">
@@ -27,13 +20,17 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   }
 
   if (!isUser && message.text) {
+    const lines = message.text.split('\n');
     return (
       <div className="flex justify-start">
         <div className="max-w-xl bg-slate-700 rounded-lg p-4 space-y-3">
-            <div 
-                className="text-slate-200 whitespace-pre-wrap leading-relaxed" 
-                dangerouslySetInnerHTML={formatText(message.text)}
-            />
+            <div className="text-slate-200 whitespace-pre-wrap leading-relaxed">
+              {lines.map((line, idx) => (
+                <p key={idx} className="mb-1 last:mb-0">
+                  {line}
+                </p>
+              ))}
+            </div>
         </div>
       </div>
     );
