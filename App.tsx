@@ -33,6 +33,7 @@ const App: React.FC = () => {
       const results = await analyzeImageForHistoricalObjects(file);
       
       let aiResponseText = '';
+      let aiEvents: any = undefined;
       if (results.length > 0) {
         const confidentResults = results.filter(obj => obj.confidence >= 0.9);
         const used = confidentResults.length > 0 ? confidentResults : results;
@@ -46,6 +47,12 @@ const App: React.FC = () => {
             : 'События: нет данных';
           return `${header}\n${desc}\n${eventsBlock}`;
         }).join('\n\n');
+
+        // Сохраняем события для генерации изображений (первый объект).
+        const firstWithEvents = used.find(obj => obj.events && obj.events.length > 0);
+        if (firstWithEvents?.events) {
+          aiEvents = firstWithEvents.events;
+        }
       } else {
         aiResponseText = "Не удалось распознать исторические объекты. Попробуйте другое фото.";
       }
@@ -54,6 +61,8 @@ const App: React.FC = () => {
         id: `ai-${Date.now()}`,
         author: 'ai',
         text: aiResponseText,
+        // @ts-expect-error доп. поле для событий (используется в ChatMessage)
+        events: aiEvents,
       };
       setChatHistory(prev => [...prev, aiMessage]);
 

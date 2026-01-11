@@ -23,3 +23,18 @@ export interface HistoricalEvent {
   description: string;
   description_ru: string;
 }
+
+export interface HistoricalEventImageRequest {
+  event: HistoricalEvent;
+  aspect_ratio?: string;
+  resolution?: string;
+  output_format?: "png" | "jpg";
+  prompt_override?: string;
+}
+
+export interface HistoricalEventImageStatus {
+  taskId: string;
+  state: "waiting" | "success" | "fail";
+  resultUrls?: string[];
+  failMsg?: string | null;
+}

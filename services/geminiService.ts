@@ -1,5 +1,6 @@
 
 import type { HistoricalObject } from "../types";
+import type { HistoricalEventImageRequest, HistoricalEventImageStatus } from "../types";
 
 // URL backend FastAPI. Можно переопределить через Vite переменную окружения.
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -27,4 +28,30 @@ export const analyzeImageForHistoricalObjects = async (
 
   const data = (await response.json()) as { objects?: HistoricalObject[] };
   return data.objects ?? [];
+};
+
+export const requestEventImage = async (
+  payload: HistoricalEventImageRequest
+): Promise<{ taskId: string }> => {
+  const response = await fetch(`${API_URL}/generate-image`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errJson = await response.json().catch(() => ({}));
+    throw new Error(errJson.detail || "Не удалось создать задачу генерации");
+  }
+  return (await response.json()) as { taskId: string };
+};
+
+export const fetchImageStatus = async (
+  taskId: string
+): Promise<HistoricalEventImageStatus> => {
+  const response = await fetch(`${API_URL}/generation-status?taskId=${encodeURIComponent(taskId)}`);
+  if (!response.ok) {
+    const errJson = await response.json().catch(() => ({}));
+    throw new Error(errJson.detail || "Не удалось получить статус задачи");
+  }
+  return (await response.json()) as HistoricalEventImageStatus;
 };

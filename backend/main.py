@@ -15,6 +15,8 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types as genai_types
+import httpx
+import json
 from pydantic import BaseModel, Field
 from PIL import Image
 
@@ -23,6 +25,9 @@ from PIL import Image
 load_dotenv()
 
 GEMINI_API_KEY: Final[str | None] = os.getenv("GEMINI_API_KEY")
+KIE_API_KEY: Final[str | None] = os.getenv("KIE_API_KEY")
+KIE_CALLBACK_URL: Final[str | None] = os.getenv("KIE_CALLBACK_URL")
+KIE_BASE_URL: Final[str] = "https://api.kie.ai/api/v1/jobs"
 # Лимит сырого файла (до ресайза), чтобы не гонять огромные аплоады.
 MAX_UPLOAD_SIZE: Final[int] = 8 * 1024 * 1024  # 8 MB
 # Лимит после сжатия (итоговый размер, который отправляем в модель).
@@ -36,6 +41,9 @@ if GEMINI_API_KEY:
     genai_client = genai.Client(api_key=GEMINI_API_KEY)
 else:
     genai_client = None
+
+# Хранилище задач генерации изображений (память процесса).
+generation_store: dict[str, dict] = {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +78,17 @@ class HistoricalObject(BaseModel):
 
 class AnalyzeResponse(BaseModel):
     objects: list[HistoricalObject]
+
+
+class KieCreateTaskResponse(BaseModel):
+    taskId: str
+
+
+class KieStatusResponse(BaseModel):
+    taskId: str
+    state: str
+    resultUrls: list[str] | None = None
+    failMsg: str | None = None
 
 
 app = FastAPI(
@@ -278,4 +297,151 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
                 # Если файл не удалился, просто продолжаем; на учебном проекте допустимо.
                 logger.warning("Failed to delete temp file: %s", tmp_path)
                 pass
+
+
+def build_prompt_for_event(event: EventInfo) -> str:
+    return (
+        f"Create a historically accurate illustration for the event '{event.title}' "
+        f"({event.title_ru}), date {event.date}. "
+        f"Context EN: {event.description}. "
+        f"Context RU: {event.description_ru}. "
+        "Style: realistic, balanced lighting, focus on key people/architecture relevant to the event. "
+        "Do not add text on the image."
+    )
+
+
+@app.post("/generate-image", response_model=KieCreateTaskResponse)
+async def generate_image(event: EventInfo):
+    """
+    Создать задачу генерации изображения через kie.ai (nano-banana-pro).
+    """
+    if not KIE_API_KEY:
+        raise HTTPException(status_code=500, detail="KIE_API_KEY не задан")
+
+    payload = {
+        "model": "nano-banana-pro",
+        "input": {
+            "prompt": build_prompt_for_event(event),
+            "image_input": [],
+            "aspect_ratio": "1:1",
+            "resolution": "1K",
+            "output_format": "png",
+        },
+    }
+    if KIE_CALLBACK_URL:
+        payload["callBackUrl"] = KIE_CALLBACK_URL
+
+    headers = {
+        "Authorization": f"Bearer {KIE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.post(f"{KIE_BASE_URL}/createTask", json=payload, headers=headers)
+        except httpx.HTTPError as err:
+            logger.exception("KIE createTask request failed")
+            raise HTTPException(status_code=502, detail=f"KIE API недоступен: {err}") from err
+
+    if resp.status_code != 200:
+        logger.warning("KIE createTask error: %s %s", resp.status_code, resp.text)
+        raise HTTPException(status_code=502, detail="KIE API вернул ошибку при создании задачи")
+
+    data = resp.json()
+    task_id = data.get("data", {}).get("taskId")
+    if not task_id:
+        raise HTTPException(status_code=502, detail="KIE API не вернул taskId")
+
+    generation_store[task_id] = {
+        "state": "waiting",
+        "resultUrls": None,
+        "failMsg": None,
+        "event": event.model_dump(),
+    }
+    return KieCreateTaskResponse(taskId=task_id)
+
+
+@app.get("/generation-status", response_model=KieStatusResponse)
+async def generation_status(taskId: str):
+    """
+    Получить статус задачи генерации. Если есть callback, возвращаем сохранённое.
+    Если нет — опрашиваем KIE API.
+    """
+    if taskId in generation_store:
+        entry = generation_store[taskId]
+        return KieStatusResponse(
+            taskId=taskId,
+            state=entry.get("state", "waiting"),
+            resultUrls=entry.get("resultUrls"),
+            failMsg=entry.get("failMsg"),
+        )
+
+    if not KIE_API_KEY:
+        raise HTTPException(status_code=500, detail="KIE_API_KEY не задан")
+
+    headers = {"Authorization": f"Bearer {KIE_API_KEY}"}
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            resp = await client.get(f"{KIE_BASE_URL}/recordInfo", params={"taskId": taskId}, headers=headers)
+        except httpx.HTTPError as err:
+            logger.exception("KIE recordInfo request failed")
+            raise HTTPException(status_code=502, detail=f"KIE API недоступен: {err}") from err
+
+    if resp.status_code != 200:
+        logger.warning("KIE recordInfo error: %s %s", resp.status_code, resp.text)
+        raise HTTPException(status_code=502, detail="KIE API вернул ошибку при получении статуса")
+
+    data = resp.json()
+    state = data.get("data", {}).get("state", "waiting")
+    result_urls = None
+    fail_msg = data.get("data", {}).get("failMsg")
+    try:
+        result_json = data.get("data", {}).get("resultJson")
+        if result_json:
+            parsed = json.loads(result_json)
+            result_urls = parsed.get("resultUrls")
+    except Exception:
+        pass
+
+    generation_store[taskId] = {
+        "state": state,
+        "resultUrls": result_urls,
+        "failMsg": fail_msg,
+    }
+
+    return KieStatusResponse(
+        taskId=taskId,
+        state=state,
+        resultUrls=result_urls,
+        failMsg=fail_msg,
+    )
+
+
+@app.post("/kie-callback")
+async def kie_callback(payload: dict):
+    """
+    Приём callback от KIE (если задан callBackUrl).
+    """
+    task_id = payload.get("data", {}).get("taskId")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="Нет taskId в callback")
+
+    state = payload.get("data", {}).get("state", "waiting")
+    fail_msg = payload.get("data", {}).get("failMsg")
+    result_urls = None
+    try:
+        result_json = payload.get("data", {}).get("resultJson")
+        if result_json:
+            parsed = json.loads(result_json)
+            result_urls = parsed.get("resultUrls")
+    except Exception:
+        logger.warning("Failed to parse resultJson in callback for task %s", task_id)
+
+    generation_store[task_id] = {
+        "state": state,
+        "resultUrls": result_urls,
+        "failMsg": fail_msg,
+    }
+
+    return {"ok": True}
 
