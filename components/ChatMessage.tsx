@@ -32,7 +32,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       setIsGenerating(true);
       setGenImageUrl(null);
       try {
-        const { taskId } = await requestEventImage({ event });
+        const { taskId } = await requestEventImage(event);
         let attempts = 0;
         const maxAttempts = 12; // ~24 сек при шаге 2с
         const wait = (ms: number) => new Promise(res => setTimeout(res, ms));
