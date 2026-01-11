@@ -23,7 +23,10 @@ from PIL import Image
 load_dotenv()
 
 GEMINI_API_KEY: Final[str | None] = os.getenv("GEMINI_API_KEY")
-MAX_FILE_SIZE: Final[int] = 5 * 1024 * 1024  # 5 MB ограничение на учебный проект
+# Жёсткий лимит на входной файл: 1 МБ, чтобы не вызывать таймауты при аплоаде/обработке.
+MAX_FILE_SIZE: Final[int] = 1 * 1024 * 1024
+# Лимит размера изображения после ресайза по длинной стороне.
+MAX_DIMENSION: Final[int] = 1000
 ALLOWED_TYPES: Final[set[str]] = {"image/png", "image/jpeg", "image/webp"}
 
 # Создаём клиент Gemini один раз.
@@ -44,10 +47,23 @@ class HealthResponse(BaseModel):
     has_api_key: bool
 
 
+class EventInfo(BaseModel):
+    title: str = Field(..., description="Название события (английский)")
+    title_ru: str = Field(..., description="Название события (русский)")
+    date: str = Field(..., description="Дата или период события")
+    description: str = Field(..., description="Краткое описание (английский)")
+    description_ru: str = Field(..., description="Краткое описание (русский)")
+
+
 class HistoricalObject(BaseModel):
     objectName: str = Field(..., description="Название объекта")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Уверенность 0-1")
-    description: str = Field(..., description="Краткое описание")
+    description: str = Field(..., description="Краткое описание на английском")
+    description_ru: str = Field(..., description="Краткое описание на русском")
+    events: list[EventInfo] | None = Field(
+        default=None,
+        description="Связанные исторические события с датами",
+    )
 
 
 class AnalyzeResponse(BaseModel):
@@ -105,22 +121,40 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
         logger.warning("File too large: %s bytes", len(raw_bytes))
         raise HTTPException(status_code=400, detail="Файл слишком большой (лимит 5MB)")
 
-    # Пробуем нормализовать изображение через Pillow, чтобы избежать ошибок
-    # "Unable to process input image" от Gemini при нестандартных файловых структурах.
+    # Пробуем нормализовать изображение через Pillow, уменьшая до 1000px по длинной стороне
+    # и перекодируя в JPEG с умеренным качеством, чтобы избежать таймаутов.
     try:
         with Image.open(BytesIO(raw_bytes)) as img:
             rgb_img = img.convert("RGB")
+            w, h = rgb_img.size
+            scale = 1.0
+            if max(w, h) > MAX_DIMENSION:
+                scale = MAX_DIMENSION / float(max(w, h))
+                new_size = (int(w * scale), int(h * scale))
+                rgb_img = rgb_img.resize(new_size, Image.LANCZOS)
             buf = BytesIO()
-            rgb_img.save(buf, format="PNG")
+            rgb_img.save(buf, format="JPEG", quality=85, optimize=True)
             normalized_bytes = buf.getvalue()
-            normalized_mime = "image/png"
+            normalized_mime = "image/jpeg"
             logger.info(
-                "Image normalized: orig_size=%s normalized_size=%s mode=%s format=%s",
+                "Image normalized: orig_size=%s normalized_size=%s mode=%s format=%s scale=%.3f",
                 len(raw_bytes),
                 len(normalized_bytes),
                 img.mode,
                 img.format,
+                scale,
             )
+            if len(normalized_bytes) > MAX_FILE_SIZE:
+                logger.warning(
+                    "Normalized image still too large: %s bytes",
+                    len(normalized_bytes),
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail="Файл слишком большой после сжатия (лимит 1MB)",
+                )
+    except HTTPException:
+        raise
     except Exception as pillow_err:  # noqa: BLE001
         logger.exception("Pillow failed to process image")
         raise HTTPException(
@@ -137,10 +171,12 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
             tmp_path = tmp.name
 
         prompt = (
-            "Analyze the image to identify historical objects. "
-            "For each historical object found, provide its name, your confidence "
-            "level (0 to 1), and a brief description. "
-            "If no such objects are found, return an empty array."
+            "Analyze the image to identify historical objects or landmarks. "
+            "For each object found, return JSON with fields: "
+            "objectName (string), confidence (0-1), description (EN), description_ru (RU). "
+            "Additionally, provide up to 3 related historical events with dates: "
+            "events: [{title (EN), title_ru (RU), date, description (EN), description_ru (RU)}]. "
+            "If no objects are found, return an empty array."
         )
 
         image_part = genai_types.Part.from_bytes(
@@ -157,8 +193,23 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
                     "objectName": {"type": "string"},
                     "confidence": {"type": "number"},
                     "description": {"type": "string"},
+                    "description_ru": {"type": "string"},
+                    "events": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "title_ru": {"type": "string"},
+                                "date": {"type": "string"},
+                                "description": {"type": "string"},
+                                "description_ru": {"type": "string"},
+                            },
+                            "required": ["title", "title_ru", "date", "description", "description_ru"],
+                        },
+                    },
                 },
-                "required": ["objectName", "confidence", "description"],
+                "required": ["objectName", "confidence", "description", "description_ru"],
             },
         }
 

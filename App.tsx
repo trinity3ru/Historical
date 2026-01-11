@@ -35,16 +35,19 @@ const App: React.FC = () => {
       let aiResponseText = '';
       if (results.length > 0) {
         const confidentResults = results.filter(obj => obj.confidence >= 0.9);
-        if (confidentResults.length > 0) {
-          aiResponseText = "I found the following historical object(s) in your image:\n\n" +
-            confidentResults.map(obj => 
-              `**${obj.objectName}** (Confidence: ${Math.round(obj.confidence * 100)}%)\n${obj.description}`
-            ).join('\n\n');
-        } else {
-          aiResponseText = "I analyzed the image, but I couldn't identify any historical objects with at least 90% confidence. Please try another image.";
-        }
+        const used = confidentResults.length > 0 ? confidentResults : results;
+        aiResponseText = used.map(obj => {
+          const header = `**${obj.objectName}** (Уверенность: ${Math.round(obj.confidence * 100)}%)`;
+          const desc = `RU: ${obj.description_ru}\nEN: ${obj.description}`;
+          const eventsBlock = (obj.events && obj.events.length > 0)
+            ? obj.events.map(ev =>
+                `- ${ev.date}: ${ev.title_ru} / ${ev.title}\n  RU: ${ev.description_ru}\n  EN: ${ev.description}`
+              ).join('\n')
+            : 'События: нет данных';
+          return `${header}\n${desc}\n${eventsBlock}`;
+        }).join('\n\n');
       } else {
-        aiResponseText = "I couldn't find any recognizable historical objects in the image. Would you like to try a different photo?";
+        aiResponseText = "Не удалось распознать исторические объекты. Попробуйте другое фото.";
       }
 
       const aiMessage: Message = {

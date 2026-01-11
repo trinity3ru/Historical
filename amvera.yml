@@ -1,14 +1,15 @@
+version: null
 meta:
-  runtime: python
-  tool: pip
-  version: "3.11"
-
+  environment: python
+  toolchain:
+    name: pip
+    version: "3.11"
 build:
   requirementsPath: backend/requirements.txt
   useCache: true
-
 run:
-  workdir: backend
-  scriptName: main.py
-  command: uvicorn main:app --host 0.0.0.0 --port 8000
+  persistenceMount: data
+ 
+  command: backend.main:app --host 0.0.0.0 --port 8000
   containerPort: 8000
+serviceType: compute
