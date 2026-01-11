@@ -23,9 +23,11 @@ from PIL import Image
 load_dotenv()
 
 GEMINI_API_KEY: Final[str | None] = os.getenv("GEMINI_API_KEY")
-# Жёсткий лимит на входной файл: 1 МБ, чтобы не вызывать таймауты при аплоаде/обработке.
-MAX_FILE_SIZE: Final[int] = 1 * 1024 * 1024
-# Лимит размера изображения после ресайза по длинной стороне.
+# Лимит сырого файла (до ресайза), чтобы не гонять огромные аплоады.
+MAX_UPLOAD_SIZE: Final[int] = 8 * 1024 * 1024  # 8 MB
+# Лимит после сжатия (итоговый размер, который отправляем в модель).
+MAX_OUTPUT_SIZE: Final[int] = 1 * 1024 * 1024  # 1 MB
+# Лимит по габаритам: уменьшаем до 1000px по длинной стороне.
 MAX_DIMENSION: Final[int] = 1000
 ALLOWED_TYPES: Final[set[str]] = {"image/png", "image/jpeg", "image/webp"}
 
@@ -117,9 +119,9 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
     if not raw_bytes:
         logger.warning("Empty file received")
         raise HTTPException(status_code=400, detail="Файл пустой")
-    if len(raw_bytes) > MAX_FILE_SIZE:
-        logger.warning("File too large: %s bytes", len(raw_bytes))
-        raise HTTPException(status_code=400, detail="Файл слишком большой (лимит 5MB)")
+    if len(raw_bytes) > MAX_UPLOAD_SIZE:
+        logger.warning("Upload too large: %s bytes", len(raw_bytes))
+        raise HTTPException(status_code=400, detail="Файл слишком большой (лимит 8MB)")
 
     # Пробуем нормализовать изображение через Pillow, уменьшая до 1000px по длинной стороне
     # и перекодируя в JPEG с умеренным качеством, чтобы избежать таймаутов.
@@ -128,25 +130,28 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeResponse:
             rgb_img = img.convert("RGB")
             w, h = rgb_img.size
             scale = 1.0
+            resized = False
             if max(w, h) > MAX_DIMENSION:
                 scale = MAX_DIMENSION / float(max(w, h))
                 new_size = (int(w * scale), int(h * scale))
                 rgb_img = rgb_img.resize(new_size, Image.LANCZOS)
+                resized = True
             buf = BytesIO()
             rgb_img.save(buf, format="JPEG", quality=85, optimize=True)
             normalized_bytes = buf.getvalue()
             normalized_mime = "image/jpeg"
             logger.info(
-                "Image normalized: orig_size=%s normalized_size=%s mode=%s format=%s scale=%.3f",
+                "Image normalized: orig_size=%s normalized_size=%s mode=%s format=%s scale=%.3f resized=%s",
                 len(raw_bytes),
                 len(normalized_bytes),
                 img.mode,
                 img.format,
                 scale,
+                resized,
             )
-            if len(normalized_bytes) > MAX_FILE_SIZE:
+            if len(normalized_bytes) > MAX_OUTPUT_SIZE:
                 logger.warning(
-                    "Normalized image still too large: %s bytes",
+                    "Normalized image too large after compression: %s bytes",
                     len(normalized_bytes),
                 )
                 raise HTTPException(
