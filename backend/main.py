@@ -364,14 +364,14 @@ async def generate_image(event: EventInfo):
 @app.get("/generation-status", response_model=KieStatusResponse)
 async def generation_status(taskId: str):
     """
-    Получить статус задачи генерации. Если есть callback, возвращаем сохранённое.
-    Если нет — опрашиваем KIE API.
+    Получить статус задачи генерации. Если задача ещё не завершена, опрашиваем KIE,
+    чтобы клиент не застревал в состоянии waiting.
     """
-    if taskId in generation_store:
-        entry = generation_store[taskId]
+    entry = generation_store.get(taskId)
+    if entry and entry.get("state") in {"success", "fail"}:
         return KieStatusResponse(
             taskId=taskId,
-            state=entry.get("state", "waiting"),
+            state=entry.get("state") or "waiting",
             resultUrls=entry.get("resultUrls"),
             failMsg=entry.get("failMsg"),
         )
@@ -393,7 +393,7 @@ async def generation_status(taskId: str):
 
     data = resp.json()
     state = data.get("data", {}).get("state", "waiting")
-    result_urls = None
+    result_urls: list[str] | None = None
     fail_msg = data.get("data", {}).get("failMsg")
     try:
         result_json = data.get("data", {}).get("resultJson")
@@ -407,6 +407,7 @@ async def generation_status(taskId: str):
         "state": state,
         "resultUrls": result_urls,
         "failMsg": fail_msg,
+        "event": entry.get("event") if entry else None,
     }
 
     return KieStatusResponse(
