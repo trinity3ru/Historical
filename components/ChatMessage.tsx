@@ -101,7 +101,15 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           {genImageUrl && (
             <div className="mt-2">
               <div className="text-sm text-slate-300 mb-1">Результат генерации:</div>
-              <img src={genImageUrl} alt="Generated" className="rounded border border-slate-600" />
+              <img
+                src={genImageUrl}
+                alt="Generated"
+                className="rounded border border-slate-600"
+                onError={() => {
+                  setGenError('Не удалось загрузить изображение. Проверьте ссылку.');
+                  setGenImageUrl(null);
+                }}
+              />
             </div>
           )}
         </div>

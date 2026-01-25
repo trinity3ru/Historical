@@ -325,6 +325,33 @@ def normalize_kie_state(raw_state: str | None) -> str:
     return "waiting"
 
 
+def normalize_result_urls(value) -> list[str] | None:
+    """
+    Приводим resultUrls к списку строк.
+    KIE может вернуть список строк или список объектов с полем url.
+    """
+    if value is None:
+        return None
+    urls: list[str] = []
+    if isinstance(value, str):
+        urls = [value]
+    elif isinstance(value, dict):
+        candidate = value.get("url") or value.get("imageUrl")
+        if isinstance(candidate, str):
+            urls = [candidate]
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                urls.append(item)
+            elif isinstance(item, dict):
+                candidate = item.get("url") or item.get("imageUrl")
+                if isinstance(candidate, str):
+                    urls.append(candidate)
+    # Чистим пустые строки и мусор.
+    urls = [u for u in urls if isinstance(u, str) and u.strip()]
+    return urls or None
+
+
 @app.post("/generate-image", response_model=KieCreateTaskResponse)
 async def generate_image(event: EventInfo):
     """
@@ -447,9 +474,18 @@ async def generation_status(taskId: str):
     fail_msg = data_payload.get("failMsg")
     try:
         result_json = data_payload.get("resultJson")
-        if result_json:
+        parsed = None
+        if isinstance(result_json, str) and result_json:
             parsed = json.loads(result_json)
-            result_urls = parsed.get("resultUrls")
+        elif isinstance(result_json, dict):
+            parsed = result_json
+        if isinstance(parsed, dict):
+            result_urls = normalize_result_urls(
+                parsed.get("resultUrls")
+                or parsed.get("resultUrl")
+                or parsed.get("imageUrl")
+                or parsed.get("images")
+            )
     except Exception:
         pass
 
@@ -492,9 +528,18 @@ async def kie_callback(payload: dict):
     result_urls = None
     try:
         result_json = payload.get("data", {}).get("resultJson")
-        if result_json:
+        parsed = None
+        if isinstance(result_json, str) and result_json:
             parsed = json.loads(result_json)
-            result_urls = parsed.get("resultUrls")
+        elif isinstance(result_json, dict):
+            parsed = result_json
+        if isinstance(parsed, dict):
+            result_urls = normalize_result_urls(
+                parsed.get("resultUrls")
+                or parsed.get("resultUrl")
+                or parsed.get("imageUrl")
+                or parsed.get("images")
+            )
     except Exception:
         logger.warning("Failed to parse resultJson in callback for task %s", task_id)
 
