@@ -362,7 +362,19 @@ async def generate_image(event: EventInfo):
         logger.warning("KIE createTask error: %s %s", resp.status_code, resp.text)
         raise HTTPException(status_code=502, detail="KIE API вернул ошибку при создании задачи")
 
-    data = resp.json()
+    # Важно: KIE иногда может вернуть пустой/некорректный JSON.
+    try:
+        data = resp.json()
+    except ValueError as parse_err:
+        logger.warning("KIE createTask returned invalid JSON: %s", resp.text)
+        raise HTTPException(
+            status_code=502,
+            detail=f"KIE API вернул некорректный JSON: {parse_err}",
+        ) from parse_err
+    if not isinstance(data, dict):
+        logger.warning("KIE createTask unexpected payload: %s", data)
+        raise HTTPException(status_code=502, detail="KIE API вернул некорректный ответ")
+
     task_id = data.get("data", {}).get("taskId")
     if not task_id:
         raise HTTPException(status_code=502, detail="KIE API не вернул taskId")
@@ -406,7 +418,18 @@ async def generation_status(taskId: str):
         logger.warning("KIE recordInfo error: %s %s", resp.status_code, resp.text)
         raise HTTPException(status_code=502, detail="KIE API вернул ошибку при получении статуса")
 
-    data = resp.json()
+    # Аналогично, защищаемся от пустого/некорректного JSON.
+    try:
+        data = resp.json()
+    except ValueError as parse_err:
+        logger.warning("KIE recordInfo returned invalid JSON: %s", resp.text)
+        raise HTTPException(
+            status_code=502,
+            detail=f"KIE API вернул некорректный JSON: {parse_err}",
+        ) from parse_err
+    if not isinstance(data, dict):
+        logger.warning("KIE recordInfo unexpected payload: %s", data)
+        raise HTTPException(status_code=502, detail="KIE API вернул некорректный ответ")
     state_raw = data.get("data", {}).get("state", "waiting")
     state = normalize_kie_state(state_raw)
     result_urls: list[str] | None = None
