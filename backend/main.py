@@ -310,6 +310,21 @@ def build_prompt_for_event(event: EventInfo) -> str:
     )
 
 
+def normalize_kie_state(raw_state: str | None) -> str:
+    """
+    Нормализуем статус KIE к одному из: waiting/success/fail.
+    Это нужно, потому что API может возвращать разные слова (succeeded/failed/etc).
+    """
+    if not raw_state:
+        return "waiting"
+    state_lower = raw_state.lower()
+    if state_lower in {"success", "succeeded", "done", "completed"}:
+        return "success"
+    if state_lower in {"fail", "failed", "error"}:
+        return "fail"
+    return "waiting"
+
+
 @app.post("/generate-image", response_model=KieCreateTaskResponse)
 async def generate_image(event: EventInfo):
     """
@@ -392,7 +407,8 @@ async def generation_status(taskId: str):
         raise HTTPException(status_code=502, detail="KIE API вернул ошибку при получении статуса")
 
     data = resp.json()
-    state = data.get("data", {}).get("state", "waiting")
+    state_raw = data.get("data", {}).get("state", "waiting")
+    state = normalize_kie_state(state_raw)
     result_urls: list[str] | None = None
     fail_msg = data.get("data", {}).get("failMsg")
     try:
@@ -402,6 +418,16 @@ async def generation_status(taskId: str):
             result_urls = parsed.get("resultUrls")
     except Exception:
         pass
+
+    # Логируем детали статуса, чтобы проще разбираться с зависаниями.
+    logger.info(
+        "KIE status: taskId=%s state_raw=%s state=%s has_urls=%s failMsg=%s",
+        taskId,
+        state_raw,
+        state,
+        bool(result_urls),
+        fail_msg,
+    )
 
     generation_store[taskId] = {
         "state": state,
