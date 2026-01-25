@@ -375,7 +375,12 @@ async def generate_image(event: EventInfo):
         logger.warning("KIE createTask unexpected payload: %s", data)
         raise HTTPException(status_code=502, detail="KIE API вернул некорректный ответ")
 
-    task_id = data.get("data", {}).get("taskId")
+    data_payload = data.get("data")
+    if not isinstance(data_payload, dict):
+        logger.warning("KIE createTask missing data field: %s", data)
+        raise HTTPException(status_code=502, detail="KIE API не вернул поле data")
+
+    task_id = data_payload.get("taskId")
     if not task_id:
         raise HTTPException(status_code=502, detail="KIE API не вернул taskId")
 
@@ -430,12 +435,18 @@ async def generation_status(taskId: str):
     if not isinstance(data, dict):
         logger.warning("KIE recordInfo unexpected payload: %s", data)
         raise HTTPException(status_code=502, detail="KIE API вернул некорректный ответ")
-    state_raw = data.get("data", {}).get("state", "waiting")
+
+    data_payload = data.get("data")
+    if not isinstance(data_payload, dict):
+        logger.warning("KIE recordInfo missing data field: %s", data)
+        raise HTTPException(status_code=502, detail="KIE API не вернул поле data")
+
+    state_raw = data_payload.get("state", "waiting")
     state = normalize_kie_state(state_raw)
     result_urls: list[str] | None = None
-    fail_msg = data.get("data", {}).get("failMsg")
+    fail_msg = data_payload.get("failMsg")
     try:
-        result_json = data.get("data", {}).get("resultJson")
+        result_json = data_payload.get("resultJson")
         if result_json:
             parsed = json.loads(result_json)
             result_urls = parsed.get("resultUrls")
