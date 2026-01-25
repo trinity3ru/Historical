@@ -12,6 +12,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [genImageUrl, setGenImageUrl] = useState<string | null>(null);
+  const [genStatus, setGenStatus] = useState<string | null>(null);
 
   if (isUser && message.imageUrl) {
     return (
@@ -31,17 +32,24 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       setGenError(null);
       setIsGenerating(true);
       setGenImageUrl(null);
+      setGenStatus("Ожидание запуска...");
       try {
         const { taskId } = await requestEventImage(event);
         let attempts = 0;
-        const maxAttempts = 12; // ~24 сек при шаге 2с
+        // Увеличиваем ожидание, т.к. генерация может занимать больше 30-60 секунд.
+        const maxAttempts = 30; // ~60 сек при шаге 2с
         const wait = (ms: number) => new Promise(res => setTimeout(res, ms));
         while (attempts < maxAttempts) {
           const status = await fetchImageStatus(taskId);
+          setGenStatus(`Статус: ${status.state}`);
           if (status.state === 'success' && status.resultUrls && status.resultUrls.length > 0) {
             setGenImageUrl(status.resultUrls[0]);
             setIsGenerating(false);
+            setGenStatus(null);
             return;
+          }
+          if (status.state === 'success' && (!status.resultUrls || status.resultUrls.length === 0)) {
+            throw new Error('Генерация завершилась без результата');
           }
           if (status.state === 'fail') {
             throw new Error(status.failMsg || 'Генерация не удалась');
@@ -53,6 +61,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       } catch (err: any) {
         setGenError(err?.message || 'Ошибка генерации изображения');
         setIsGenerating(false);
+        setGenStatus(null);
       }
     };
 
@@ -87,6 +96,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             </div>
           )}
 
+          {genStatus && <div className="text-slate-300 text-sm">{genStatus}</div>}
           {genError && <div className="text-red-400 text-sm">{genError}</div>}
           {genImageUrl && (
             <div className="mt-2">
